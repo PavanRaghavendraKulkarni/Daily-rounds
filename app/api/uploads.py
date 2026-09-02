@@ -47,7 +47,7 @@ async def get_upload_status(file_id: uuid.UUID, db: AsyncSession = Depends(get_d
     record = await db.get(FileRecord, file_id)
     if record is None:
         raise HTTPException(status_code=404, detail="upload not found")
-    return UploadStatusResponse.model_validate(record, from_attributes=True)
+    return UploadStatusResponse.from_record(record)
 
 
 @router.patch("/{file_id}", response_model=UploadChunkResponse)
@@ -114,9 +114,13 @@ async def complete_upload(
 
     record.status = FileStatus.UPLOADED
     await db.commit()
+    # updated_at is server-computed (onupdate=func.now()); after commit it's expired
+    # and would otherwise trigger an implicit lazy-load outside the async context
+    # when read below.
+    await db.refresh(record)
 
     # Request handler returns immediately; the actual indexing work happens out of
     # band in the worker process so this call never blocks on CPU-heavy embedding.
     await pool.enqueue_job("process_file", str(file_id))
 
-    return UploadStatusResponse.model_validate(record, from_attributes=True)
+    return UploadStatusResponse.from_record(record)

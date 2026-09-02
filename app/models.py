@@ -30,7 +30,9 @@ class FileRecord(Base):
     total_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     bytes_received: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     status: Mapped[FileStatus] = mapped_column(
-        Enum(FileStatus, name="file_status"), nullable=False, default=FileStatus.UPLOADING
+        Enum(FileStatus, name="file_status", values_callable=lambda enum_cls: [e.value for e in enum_cls]),
+        nullable=False,
+        default=FileStatus.UPLOADING,
     )
     chunks_indexed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

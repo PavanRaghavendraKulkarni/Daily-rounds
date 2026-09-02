@@ -19,7 +19,7 @@ async def get_file_status(file_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     record = await db.get(FileRecord, file_id)
     if record is None:
         raise HTTPException(status_code=404, detail="file not found")
-    return UploadStatusResponse.model_validate(record, from_attributes=True)
+    return UploadStatusResponse.from_record(record)
 
 
 @router.get("/{file_id}/sections", response_model=SectionResponse)

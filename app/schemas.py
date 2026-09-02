@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models import FileStatus
+from app.models import FileRecord, FileStatus
 
 
 class CreateUploadRequest(BaseModel):
@@ -26,6 +26,23 @@ class UploadStatusResponse(BaseModel):
     error_message: str | None
     created_at: datetime
     updated_at: datetime
+
+    @classmethod
+    def from_record(cls, record: FileRecord) -> "UploadStatusResponse":
+        # FileRecord's primary key attribute is `id`, not `file_id` — explicit
+        # field-by-field mapping here avoids relying on model_validate's
+        # attribute-name matching, which silently fails for renamed fields.
+        return cls(
+            file_id=record.id,
+            filename=record.filename,
+            status=record.status,
+            total_size=record.total_size,
+            bytes_received=record.bytes_received,
+            chunks_indexed=record.chunks_indexed,
+            error_message=record.error_message,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
 
 
 class UploadChunkResponse(BaseModel):
