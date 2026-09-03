@@ -19,6 +19,11 @@ budget.
 - **Honest limits, with the arithmetic done** — what's actually memory-bounded,
   what isn't, and the real floor.
   → [Limits, with the arithmetic](#limits-with-the-arithmetic)
+- **A byte-accuracy invariant, actually tested** — `data[start:end].decode() ==
+  chunk.text` against a 3-byte read buffer, chosen specifically to force
+  multi-byte UTF-8 characters across buffer boundaries rather than hoping one
+  turns up.
+  → [`tests/test_chunker.py`](tests/test_chunker.py)
 
 ## Architecture
 
@@ -124,6 +129,15 @@ curl -X POST localhost:8000/files/<id>/search \
 curl "localhost:8000/files/<id>/sections?start=1000&end=1500"
 ```
 
+## Tests
+
+```bash
+docker compose up -d postgres redis
+pytest
+```
+
+Chunker tests run standalone; the resume-protocol tests need Postgres and skip
+cleanly without it.
 
 ## Design discussion
 
@@ -175,9 +189,29 @@ Being specific about both:
   Docker volume backends), but not guaranteed universally; on a backend that
   doesn't support it, that one call would actually write `total_size` zero-bytes
   instead of being instant.
-- **No crash-resume for indexing, and no dedup on retry** (see §4 below) — a
-  failed job re-run reprocesses the file from the start and inserts duplicate
-  chunk rows rather than continuing from where it left off.
+- **Time is the limit that actually bites on a 10 GB file.** Chunking advances
+  by `INDEX_CHUNK_CHARS - INDEX_CHUNK_OVERLAP_CHARS` = 850 bytes per chunk, so a
+  10 GB file produces roughly 10,737,418,240 / 850 ≈ 12.6 million chunks. Even a
+  modest CPU throughput of a few hundred chunks/sec means indexing runs for
+  hours — comfortably past `WORKER_JOB_TIMEOUT_SECONDS`'s default of 3600 (one
+  hour). The job gets killed mid-run, and — per the point below — a retry
+  reprocesses from the start into the same wall. The real fix is splitting one
+  file into ranged sub-jobs (each `process_file` call taking a byte range
+  instead of a whole file) so no single job can outrun the timeout, and partial
+  progress survives a kill.
+- **Storage roughly triples the input size.** ~12.6 million chunks × ~1000
+  bytes of stored `text` ≈ 11.8 GB, plus ~12.6 million × 384 × 4 bytes of
+  `vector(384)` embeddings ≈ 18 GB — a 10 GB input produces ~30 GB of raw column
+  data in Postgres, and the HNSW index itself (a graph over every vector) adds
+  further overhead on top of that. The `text` column is the fixable half: every
+  chunk already carries `start_offset`/`end_offset`, so the original text is
+  always re-fetchable from disk via `/sections` — storing it a second time in
+  Postgres is redundant. Dropping `chunks.text` and reading matched text from
+  disk on demand at search time would cut the ~11.8 GB entirely, leaving only
+  the ~18 GB of vectors pgvector actually needs to search against.
+- **No crash-resume for indexing, and no dedup on retry.** A failed job re-run
+  reprocesses the file from the start and inserts duplicate chunk rows rather
+  than continuing from where it left off.
 
 ### 2. Interrupted uploads
 
@@ -218,10 +252,10 @@ Indexing is a single streaming pass: read → incrementally decode → window in
 overlapping ~1000-character chunks (150-char overlap, so a sentence spanning a
 chunk boundary isn't lost) → batch-embed (32 chunks/batch) → batch-insert into
 Postgres with progress (`chunks_indexed`) committed as it goes. If the process
-crashes partway, `status` reflects `failed` with the error captured, and — because
-progress is durable — a straightforward extension is to resume from the last
-committed `chunk_index` rather than reprocessing the whole file (not implemented,
-noted as a next step for scale).
+crashes partway, `status` reflects `failed` with the error captured — see
+[Limits, with the arithmetic](#limits-with-the-arithmetic) for why that
+durable progress doesn't amount to crash-resume as-is, and what a large file
+actually needs instead.
 
 pgvector's HNSW index (`hnsw ... vector_cosine_ops`) gives approximate
 nearest-neighbor search that scales sub-linearly with chunk count, rather than a
