@@ -46,8 +46,7 @@ sequenceDiagram
     participant Redis
     participant Worker
 
-    rect rgb(235, 245, 251)
-    note right of Client: Upload — synchronous
+    note over Client, Postgres: Upload — synchronous
     Client->>API: POST /uploads {filename, size}
     API->>Disk: truncate → sparse file
     API->>Postgres: insert file row (uploading)
@@ -58,17 +57,13 @@ sequenceDiagram
     Client->>API: POST /uploads/{id}/complete
     API->>Redis: enqueue process_file(id)
     API-->>Client: 200 OK — returns immediately
-    end
 
-    rect rgb(240, 235, 250)
-    note right of Worker: Indexing — background, off the request path
+    note over Redis, Postgres: Indexing — background, off the request path
     Redis->>Worker: dequeue process_file
     Worker->>Disk: stream read, 4 MB buffers
     Worker->>Postgres: batch insert chunks + embeddings → ready
-    end
 
-    rect rgb(232, 247, 241)
-    note right of Client: Search — synchronous, cached
+    note over Client, Postgres: Search — synchronous, cached
     Client->>API: POST /files/{id}/search {query}
     API->>Redis: cache lookup
     alt cache miss
@@ -76,7 +71,6 @@ sequenceDiagram
         API->>Redis: store result (ttl 300s)
     end
     API-->>Client: top-k results + byte offsets
-    end
 ```
 
 Note the request boundary at `200 OK — returns immediately`: the client is
