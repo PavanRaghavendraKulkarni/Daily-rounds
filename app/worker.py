@@ -22,8 +22,14 @@ async def process_file(ctx, file_id: str) -> None:
     text windows, embed them in small batches, and persist incrementally.
 
     Nothing here ever holds the whole file — or the whole embedding set — in memory.
-    Progress is committed to the DB as we go, so a crash resumes from the last
-    completed batch rather than starting over.
+    `chunks_indexed` is updated after every batch commit, so a client polling status
+    mid-run sees real progress, not just a final count once everything is done.
+
+    This does NOT implement crash-resume: on failure, `status` is set to `failed`
+    with the error captured, but re-running this job on the same file reprocesses
+    it from the start (and would insert duplicate chunk rows) rather than resuming
+    from the last committed batch. See the README's design discussion (§4) for why
+    that's a reasonable next step rather than something implemented here.
     """
     fid = uuid.UUID(file_id)
     async with SessionLocal() as session:
@@ -34,11 +40,11 @@ async def process_file(ctx, file_id: str) -> None:
 
         record.status = FileStatus.PROCESSING
         record.error_message = None
+        record.chunks_indexed = 0
         await session.commit()
 
         path = storage_path_for(fid)
         pending: list = []
-        indexed_count = 0
 
         try:
             byte_stream = iter_file_bytes(path, settings.index_read_buffer_bytes)
@@ -47,16 +53,15 @@ async def process_file(ctx, file_id: str) -> None:
             ):
                 pending.append(text_chunk)
                 if len(pending) >= settings.db_flush_batch_size:
-                    indexed_count += await _flush_batch(session, fid, pending)
+                    await _flush_batch(session, record, pending)
                     pending = []
 
             if pending:
-                indexed_count += await _flush_batch(session, fid, pending)
+                await _flush_batch(session, record, pending)
 
             record.status = FileStatus.READY
-            record.chunks_indexed = indexed_count
             await session.commit()
-        except Exception as exc:  
+        except Exception as exc:
             logger.exception("indexing failed for file %s", file_id)
             await session.execute(
                 update(FileRecord)
@@ -69,14 +74,14 @@ async def process_file(ctx, file_id: str) -> None:
             await cache_invalidate_prefix(f"{SECTION_CACHE_PREFIX}:{file_id}")
 
 
-async def _flush_batch(session, file_id: uuid.UUID, pending: list) -> int:
+async def _flush_batch(session, record: FileRecord, pending: list) -> None:
     texts = [c.text for c in pending]
     embeddings = embed_texts(texts)
 
     for text_chunk, embedding in zip(pending, embeddings):
         session.add(
             ChunkRecord(
-                file_id=file_id,
+                file_id=record.id,
                 chunk_index=text_chunk.chunk_index,
                 start_offset=text_chunk.start_offset,
                 end_offset=text_chunk.end_offset,
@@ -84,9 +89,9 @@ async def _flush_batch(session, file_id: uuid.UUID, pending: list) -> int:
                 embedding=embedding,
             )
         )
+    record.chunks_indexed += len(pending)
     await session.flush()
     await session.commit()
-    return len(pending)
 
 
 class WorkerSettings:

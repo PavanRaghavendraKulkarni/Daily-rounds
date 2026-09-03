@@ -159,8 +159,9 @@ Each upload is its own row (`FileRecord`, UUID-keyed) and its own file on disk â
 there's no shared mutable state between uploads, so they don't contend with each
 other. Concurrency is bounded in two places:
 
-- Per-chunk request size is capped (safety limit in `upload_chunk` â€” 64 MB) so one
-  slow/huge client request can't monopolize a worker thread or memory for long.
+- Per-chunk request size is capped (`UPLOAD_CHUNK_MAX_BYTES`, default 16 MB) so
+  one slow/huge client request can't monopolize a worker thread or memory for
+  long.
 - On the indexing side, the `arq` worker's `max_jobs` setting caps how many
   `process_file` jobs run concurrently *in one worker process* (set to 2 here,
   since each job's steady-state memory is small but non-zero); horizontal scaling
