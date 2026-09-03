@@ -229,37 +229,31 @@ machine, one Postgres, one Redis). At real scale, the changes I'd make:
 
 ## Use of AI coding tools
 
-This project was built with **Claude Code** (Anthropic), used throughout — not
-just for initial scaffolding, but for live debugging against the actual running
-Docker stack. That distinction matters for how it was validated, so the process
-is worth being specific about rather than just naming the tool:
+I specified the architecture — streaming pipeline bounded by fixed-size buffers,
+offset-addressed resumable uploads, pgvector rather than a separate vector
+service, Redis doing double duty as both task queue and cache — and used
+**Claude Code** (Anthropic) to implement it, then validated everything against
+the actual running Docker stack rather than trusting a read-through: real
+uploads via curl and a small browser demo page, real Postgres/Redis inspection
+via `psql`/`redis-cli`, real `EXPLAIN ANALYZE` when something looked wrong.
 
-- **Scaffolding**: the FastAPI/Postgres+pgvector/Redis+arq structure, the
-  resumable-upload protocol, the streaming chunker, and the background indexing
-  worker were generated from an architecture I specified up front (streaming
-  design, offset-based resumable uploads, pgvector for the vector index, Redis as
-  both queue and cache).
-- **Validation was continuous, not a one-time read-through.** Every major piece
-  was exercised against the real running containers — actual uploads via curl and
-  a small browser demo page, actual Postgres/Redis inspection via `psql`/
-  `redis-cli`, actual `EXPLAIN ANALYZE` when search results looked wrong — rather
-  than trusting the generated code from a read alone.
-- **Real bugs were found this way, not hypothesized:**
-  - A SQLAlchemy `Enum` column sending `"UPLOADING"` (member name) instead of
-    `"uploading"` (member value) to Postgres's native enum type — surfaced as a
-    `500` on the very first real upload.
-  - A response schema (`UploadStatusResponse.file_id`) that couldn't
-    auto-populate from the ORM model's `id` attribute via `model_validate` — the
-    field-name mismatch was silent until an actual request hit it.
-  - An async lazy-load on a server-computed column (`updated_at`) after
-    `commit()`, which async SQLAlchemy can't resolve implicitly — only
-    reproducible by actually calling the endpoint, not by reading the code.
-  - A `pgvector` `ivfflat` index built on an empty table at migration time,
-    which degraded to the point of returning zero results for genuine matches
-    once real data (~6k chunks) was loaded — found by noticing a search for
-    content I could see was in the file came back empty, then confirmed with
-    `EXPLAIN ANALYZE` before fixing it (switched to `hnsw`, see
-    `alembic/versions/0002_hnsw_index.py`).
-- Each of these was root-caused against the actual system state (Postgres rows,
-  Redis keys, query plans) before being fixed — not patched speculatively.
+The clearest example: a search for a log line I could see was in the file came
+back with zero results once the file had real data (~6k chunks) loaded. Empty
+results with no error meant the query itself was the suspect, not the embedding
+model — so I compared the raw SQL directly in `psql`, which worked fine, then
+ran the same query with the actual query embedding and got zero rows via
+`EXPLAIN ANALYZE`, which pointed at the vector index rather than the query
+logic. That led to the real cause: `pgvector`'s `ivfflat` index was created in
+the same migration as the table, meaning its clusters were trained (k-means) on
+zero rows — every row inserted afterward landed in degenerate clusters, so an
+approximate search would sometimes probe the wrong one and miss real matches
+entirely. Fixed by switching to `hnsw`, which builds incrementally instead of
+requiring pre-existing data (`alembic/versions/0002_hnsw_index.py`).
+
+A few other runtime-only failures came up the same way — a SQLAlchemy enum
+sending the wrong string to Postgres's native enum type, a response schema
+field that couldn't auto-populate from a differently-named ORM attribute, an
+async lazy-load on a server-computed column after `commit()` — each one only
+visible by actually calling the endpoint, not from reading the code, and each
+root-caused against real system state before being fixed.
 
