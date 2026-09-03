@@ -4,5 +4,4 @@ __pycache__
 venv
 storage/
 .git
-.pytest_cache
 *.egg-info
