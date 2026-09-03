@@ -178,9 +178,15 @@ progress is durable — a straightforward extension is to resume from the last
 committed `chunk_index` rather than reprocessing the whole file (not implemented,
 noted as a next step for scale).
 
-pgvector's IVFFlat index (`ivfflat ... vector_cosine_ops`) gives approximate
+pgvector's HNSW index (`hnsw ... vector_cosine_ops`) gives approximate
 nearest-neighbor search that scales sub-linearly with chunk count, rather than a
-full sequential scan per query.
+full sequential scan per query. (An earlier version used `ivfflat` instead —
+switched to HNSW after live testing at ~6k chunks surfaced a real correctness
+issue: `ivfflat`'s clusters are trained on whatever rows exist at index-creation
+time, and the original migration created the index before any data existed,
+producing degenerate clusters that caused genuine matches to occasionally return
+zero results. HNSW is built incrementally, so it doesn't have that failure mode.
+See `alembic/versions/0002_hnsw_index.py`.)
 
 ### 5. How semantic search works
 
@@ -219,4 +225,40 @@ machine, one Postgres, one Redis). At real scale, the changes I'd make:
   transit the API process at all.
 - **Caching**: the current per-file Redis cache would move to a shared cluster
   (Redis Cluster / a managed cache) with eviction tuned for the larger working set.
+
+## Use of AI coding tools
+
+This project was built with **Claude Code** (Anthropic), used throughout — not
+just for initial scaffolding, but for live debugging against the actual running
+Docker stack. That distinction matters for how it was validated, so the process
+is worth being specific about rather than just naming the tool:
+
+- **Scaffolding**: the FastAPI/Postgres+pgvector/Redis+arq structure, the
+  resumable-upload protocol, the streaming chunker, and the background indexing
+  worker were generated from an architecture I specified up front (streaming
+  design, offset-based resumable uploads, pgvector for the vector index, Redis as
+  both queue and cache).
+- **Validation was continuous, not a one-time read-through.** Every major piece
+  was exercised against the real running containers — actual uploads via curl and
+  a small browser demo page, actual Postgres/Redis inspection via `psql`/
+  `redis-cli`, actual `EXPLAIN ANALYZE` when search results looked wrong — rather
+  than trusting the generated code from a read alone.
+- **Real bugs were found this way, not hypothesized:**
+  - A SQLAlchemy `Enum` column sending `"UPLOADING"` (member name) instead of
+    `"uploading"` (member value) to Postgres's native enum type — surfaced as a
+    `500` on the very first real upload.
+  - A response schema (`UploadStatusResponse.file_id`) that couldn't
+    auto-populate from the ORM model's `id` attribute via `model_validate` — the
+    field-name mismatch was silent until an actual request hit it.
+  - An async lazy-load on a server-computed column (`updated_at`) after
+    `commit()`, which async SQLAlchemy can't resolve implicitly — only
+    reproducible by actually calling the endpoint, not by reading the code.
+  - A `pgvector` `ivfflat` index built on an empty table at migration time,
+    which degraded to the point of returning zero results for genuine matches
+    once real data (~6k chunks) was loaded — found by noticing a search for
+    content I could see was in the file came back empty, then confirmed with
+    `EXPLAIN ANALYZE` before fixing it (switched to `hnsw`, see
+    `alembic/versions/0002_hnsw_index.py`).
+- Each of these was root-caused against the actual system state (Postgres rows,
+  Redis keys, query plans) before being fixed — not patched speculatively.
 
