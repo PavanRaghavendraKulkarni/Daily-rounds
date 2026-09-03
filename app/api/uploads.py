@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import get_db
 from app.models import FileRecord, FileStatus
 from app.queue import get_arq_pool
@@ -15,6 +16,7 @@ from app.schemas import (
 from app.services.storage import storage_path_for
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
+settings = get_settings()
 
 
 @router.post("", response_model=CreateUploadResponse, status_code=201)
@@ -78,7 +80,7 @@ async def upload_chunk(file_id: uuid.UUID, request: Request, db: AsyncSession = 
         )
 
     path = storage_path_for(file_id)
-    max_end = min(record.total_size, offset + 64 * 1024 * 1024)  # hard safety cap per request
+    max_end = min(record.total_size, offset + settings.upload_chunk_max_bytes)
     written = 0
 
     with open(path, "r+b") as f:

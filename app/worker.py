@@ -6,6 +6,7 @@ from sqlalchemy import update
 
 from app.cache import cache_invalidate_prefix
 from app.config import get_settings
+from app.constants import SEARCH_CACHE_PREFIX, SECTION_CACHE_PREFIX
 from app.db import SessionLocal
 from app.models import ChunkRecord, FileRecord, FileStatus
 from app.services.chunker import chunk_byte_stream
@@ -14,11 +15,6 @@ from app.services.storage import iter_file_bytes, storage_path_for
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-# Number of text chunks embedded/inserted per DB round trip. Keeps both the
-# embedding batch and the in-memory chunk list small and bounded regardless
-# of file size.
-DB_FLUSH_BATCH_SIZE = 64
 
 
 async def process_file(ctx, file_id: str) -> None:
@@ -50,7 +46,7 @@ async def process_file(ctx, file_id: str) -> None:
                 byte_stream, settings.index_chunk_chars, settings.index_chunk_overlap_chars
             ):
                 pending.append(text_chunk)
-                if len(pending) >= DB_FLUSH_BATCH_SIZE:
+                if len(pending) >= settings.db_flush_batch_size:
                     indexed_count += await _flush_batch(session, fid, pending)
                     pending = []
 
@@ -69,8 +65,8 @@ async def process_file(ctx, file_id: str) -> None:
             )
             await session.commit()
         finally:
-            await cache_invalidate_prefix(f"search:{file_id}")
-            await cache_invalidate_prefix(f"section:{file_id}")
+            await cache_invalidate_prefix(f"{SEARCH_CACHE_PREFIX}:{file_id}")
+            await cache_invalidate_prefix(f"{SECTION_CACHE_PREFIX}:{file_id}")
 
 
 async def _flush_batch(session, file_id: uuid.UUID, pending: list) -> int:
@@ -98,5 +94,5 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     # Bounds worker-process concurrency so simultaneous indexing jobs can't blow
     # past the 4 GB budget together; each job's own memory use is already bounded.
-    max_jobs = 2
-    job_timeout = 60 * 60
+    max_jobs = settings.worker_max_jobs
+    job_timeout = settings.worker_job_timeout_seconds

@@ -26,8 +26,20 @@ class Settings(BaseSettings):
     embedding_model_name: str = "all-MiniLM-L6-v2"
     embedding_dim: int = 384
 
+    # Chunks embedded+inserted per DB round trip in the worker (see worker.py).
+    db_flush_batch_size: int = 64
+
     search_cache_ttl_seconds: int = 300
     section_cache_ttl_seconds: int = 300
+
+    # arq worker: how many indexing jobs one worker process runs concurrently,
+    # and how long a single job may run before being considered stuck.
+    worker_max_jobs: int = 2
+    worker_job_timeout_seconds: int = 60 * 60
+
+    # Comma-separated list of allowed CORS origins ("*" for local dev). Scope
+    # this down before deploying anywhere real.
+    cors_allow_origins: str = "*"
 
 
 @lru_cache

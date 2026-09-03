@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache import cache_get_json, cache_set_json, make_cache_key
 from app.config import get_settings
+from app.constants import SEARCH_CACHE_PREFIX
 from app.db import get_db
 from app.models import ChunkRecord, FileRecord, FileStatus
 from app.schemas import SearchRequest, SearchResponse, SearchResult
@@ -23,7 +24,7 @@ async def search_file(file_id: uuid.UUID, body: SearchRequest, db: AsyncSession 
     if record.status != FileStatus.READY:
         raise HTTPException(status_code=409, detail=f"file is not ready for search (status={record.status})")
 
-    cache_key = make_cache_key(f"search:{file_id}", body.query.strip().lower(), str(body.top_k))
+    cache_key = make_cache_key(f"{SEARCH_CACHE_PREFIX}:{file_id}", body.query.strip().lower(), str(body.top_k))
     cached = await cache_get_json(cache_key)
     if cached is not None:
         return SearchResponse(file_id=file_id, query=body.query, results=cached["results"], cached=True)

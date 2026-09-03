@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache import cache_get_json, cache_set_json, make_cache_key
 from app.config import get_settings
+from app.constants import SECTION_CACHE_PREFIX
 from app.db import get_db
 from app.models import FileRecord
 from app.schemas import SectionResponse, UploadStatusResponse
@@ -38,7 +39,7 @@ async def get_section(
     if end > record.total_size:
         raise HTTPException(status_code=400, detail="range exceeds file size")
 
-    cache_key = make_cache_key(f"section:{file_id}", str(start), str(end))
+    cache_key = make_cache_key(f"{SECTION_CACHE_PREFIX}:{file_id}", str(start), str(end))
     cached = await cache_get_json(cache_key)
     if cached is not None:
         return SectionResponse(file_id=file_id, start=start, end=end, content=cached["content"], cached=True)
