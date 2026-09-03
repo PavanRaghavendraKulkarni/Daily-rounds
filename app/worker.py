@@ -56,7 +56,7 @@ async def process_file(ctx, file_id: str) -> None:
             record.status = FileStatus.READY
             record.chunks_indexed = indexed_count
             await session.commit()
-        except Exception as exc:  # noqa: BLE001 - persist failure for status/retry visibility
+        except Exception as exc:  
             logger.exception("indexing failed for file %s", file_id)
             await session.execute(
                 update(FileRecord)

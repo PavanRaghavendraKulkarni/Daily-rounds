@@ -8,7 +8,7 @@ from alembic import context
 
 from app.config import get_settings
 from app.db import Base
-from app.models import ChunkRecord, FileRecord  # noqa: F401 - ensure models are registered
+from app.models import ChunkRecord, FileRecord  
 
 config = context.config
 if config.config_file_name is not None:
