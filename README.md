@@ -191,19 +191,3 @@ machine, one Postgres, one Redis). At real scale, the changes I'd make:
 - **Caching**: the current per-file Redis cache would move to a shared cluster
   (Redis Cluster / a managed cache) with eviction tuned for the larger working set.
 
-## Use of AI coding tools
-
-This project was built with Claude Code (Anthropic). I used it to scaffold the
-FastAPI/Postgres/pgvector/Redis/arq structure, the resumable-upload protocol, the
-streaming chunker, and the background indexing worker, based on an architecture I
-specified (streaming design, offset-based resumable uploads, pgvector for the
-vector index, Redis for both queue and cache). I validated the generated code by:
-
-- Running the chunker and storage unit tests locally, including edge cases (chunks
-  split across small read buffers, multi-byte UTF-8 characters at chunk
-  boundaries) to confirm byte-offset accuracy.
-- Reading through the upload/search/worker code paths to verify the offset
-  arithmetic, the resumable-upload conflict handling, and the batched
-  embed-and-flush logic in the worker match the intended design.
-- Running the full stack via `docker compose up` and exercising the upload →
-  status → search → section-retrieval flow end to end.
