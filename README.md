@@ -5,6 +5,21 @@ indexed asynchronously in the background and become searchable via natural-langu
 (embedding-based) semantic search, all while the service stays within a 4 GB RAM
 budget.
 
+## What's interesting here
+
+- **Byte-accurate offsets through a live stream** — an incremental UTF-8 decoder
+  windows a file into overlapping chunks without ever materializing it, correctly
+  handling multi-byte characters split across read buffers.
+  → [`app/services/chunker.py`](app/services/chunker.py)
+- **A real correctness bug, found at scale, fixed with a migration** — pgvector's
+  `ivfflat` index was trained on an empty table, silently missing genuine matches
+  once real data was loaded; caught with `EXPLAIN ANALYZE`, fixed by switching to
+  `hnsw`.
+  → [`alembic/versions/0002_hnsw_index.py`](alembic/versions/0002_hnsw_index.py)
+- **Honest limits, with the arithmetic done** — what's actually memory-bounded,
+  what isn't, and the real floor.
+  → [Limits, with the arithmetic](#limits-with-the-arithmetic)
+
 ## Architecture
 
 ![Architecture diagram: Client sends a chunked PUT to FastAPI; FastAPI enqueues onto Redis and writes to Postgres+pgvector; the arq worker dequeues from Redis, streams the file, embeds chunks, and writes vectors to Postgres; the worker also uses Redis as a cache.](docs/architecture.png)
@@ -128,12 +143,41 @@ memory:
   producing overlapping text windows with byte-accurate offsets — without ever
   materializing more than one buffer + one window's worth of text.
 - **Embedding + writes**: chunks are embedded and flushed to Postgres in small
-  batches (64 chunks per DB round trip; see `worker.DB_FLUSH_BATCH_SIZE`), so the
+  batches (`DB_FLUSH_BATCH_SIZE`, default 64 chunks per DB round trip), so the
   resident set stays roughly constant regardless of file size — a 10 GB file and a
   10 MB file use the same peak memory during indexing, just for different amounts
   of time.
-- The embedding model itself (`all-MiniLM-L6-v2`, ~90 MB) is small and CPU-only,
-  loaded once per process.
+- The embedding model itself (`all-MiniLM-L6-v2`, ~90 MB of weights) is small and
+  CPU-only, loaded once per process.
+
+### Limits, with the arithmetic
+
+The streaming design bounds memory *relative to file size* to something small —
+but that's not the same as the process using little memory in absolute terms.
+Being specific about both:
+
+- **The per-file hot path is genuinely tiny.** One read buffer
+  (`INDEX_READ_BUFFER_BYTES`, 4 MB) plus one pending batch: 64 chunks × ~1000
+  chars of text (≈62 KB) + 64 × 384 float32 embedding values (64 × 384 × 4 bytes
+  ≈ 96 KB) ≈ 160 KB. Call it ~4.2 MB total, and that number is the same whether
+  the source file is 10 KB or 10 GB.
+- **The real floor is the model runtime, not the file.** `sentence-transformers`
+  + its PyTorch backend costs several hundred MB of resident memory per process
+  just to have the model loaded — independent of the ~4.2 MB above, and paid
+  once per process regardless of how many files it indexes. That's the actual
+  reason `docker-compose.yml` caps the `worker` container at 3 GB
+  (`deploy.resources.limits.memory`), not the streaming arithmetic above.
+- **The model is loaded twice, not once.** `api` and `worker` are separate
+  processes, and each has its own `@lru_cache`d model instance — the fixed cost
+  above is paid independently by both, on the same 4 GB machine.
+- **`POST /uploads` sparse-allocates the full `total_size` via `truncate`** —
+  free and instant on filesystems that support sparse files (ext4, APFS, most
+  Docker volume backends), but not guaranteed universally; on a backend that
+  doesn't support it, that one call would actually write `total_size` zero-bytes
+  instead of being instant.
+- **No crash-resume for indexing, and no dedup on retry** (see §4 below) — a
+  failed job re-run reprocesses the file from the start and inserts duplicate
+  chunk rows rather than continuing from where it left off.
 
 ### 2. Interrupted uploads
 
