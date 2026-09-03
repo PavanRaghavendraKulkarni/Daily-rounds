@@ -32,6 +32,58 @@ API and worker share a Docker volume for uploaded file storage.
 
 Interactive API docs: `http://localhost:8000/docs`
 
+### Request flow
+
+The diagram above shows *who talks to whom*; this shows *what actually happens,
+in order* — from creating an upload through to a cached search result.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant Disk
+    participant Postgres
+    participant Redis
+    participant Worker
+
+    rect rgb(235, 245, 251)
+    note right of Client: Upload — synchronous
+    Client->>API: POST /uploads {filename, size}
+    API->>Disk: truncate → sparse file
+    API->>Postgres: insert file row (uploading)
+    loop each chunk, resumable
+        Client->>API: PATCH chunk @offset
+        API->>Disk: write bytes @offset
+    end
+    Client->>API: POST /uploads/{id}/complete
+    API->>Redis: enqueue process_file(id)
+    API-->>Client: 200 OK — returns immediately
+    end
+
+    rect rgb(240, 235, 250)
+    note right of Worker: Indexing — background, off the request path
+    Redis->>Worker: dequeue process_file
+    Worker->>Disk: stream read, 4 MB buffers
+    Worker->>Postgres: batch insert chunks + embeddings → ready
+    end
+
+    rect rgb(232, 247, 241)
+    note right of Client: Search — synchronous, cached
+    Client->>API: POST /files/{id}/search {query}
+    API->>Redis: cache lookup
+    alt cache miss
+        API->>Postgres: cosine similarity search
+        API->>Redis: store result (ttl 300s)
+    end
+    API-->>Client: top-k results + byte offsets
+    end
+```
+
+Note the request boundary at `200 OK — returns immediately`: the client is
+released the instant the indexing job is on the queue, before any indexing has
+happened. Everything in the "Indexing" phase runs independently, in the `worker`
+process, off that request entirely.
+
 ### Typical flow
 
 ```bash
