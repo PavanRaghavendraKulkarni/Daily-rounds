@@ -7,24 +7,7 @@ budget.
 
 ## Architecture
 
-```
-                 ┌─────────────┐        ┌───────────────┐
-  client ───────▶│   FastAPI   │───────▶│   Postgres    │
-  (chunked PUT)  │   (api)     │        │  + pgvector   │
-                 └──────┬──────┘        └───────┬───────┘
-                        │ enqueue                │
-                        ▼                        │
-                 ┌─────────────┐                 │
-                 │    Redis    │◀── cache ───┐    │
-                 │ (queue+cache)│             │    │
-                 └──────┬──────┘             │    │
-                        │ dequeue             │    │
-                        ▼                     │    │
-                 ┌─────────────┐              │    │
-                 │  arq worker │──streams file│────┘
-                 │  (indexing) │  embeds chunks
-                 └─────────────┘  writes vectors
-```
+![Architecture diagram: Client sends a chunked PUT to FastAPI; FastAPI enqueues onto Redis and writes to Postgres+pgvector; the arq worker dequeues from Redis, streams the file, embeds chunks, and writes vectors to Postgres; the worker also uses Redis as a cache.](docs/architecture.png)
 
 - **api**: FastAPI app. Handles upload sessions, chunked/resumable writes, status
   queries, search, and section retrieval. Never does CPU-heavy work itself.
