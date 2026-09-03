@@ -12,11 +12,6 @@ def storage_path_for(file_id: uuid.UUID) -> Path:
     return settings.storage_dir / f"{file_id}.bin"
 
 
-async def write_chunk_at_offset(path: Path, offset: int, data: bytes) -> None:
-    """Append a byte range at a known offset without ever holding the full file in memory."""
-    async with aiofiles.open(path, "r+b" if path.exists() else "w+b") as f:
-        await f.seek(offset)
-        await f.write(data)
 
 
 async def read_range(path: Path, start: int, end: int) -> bytes:

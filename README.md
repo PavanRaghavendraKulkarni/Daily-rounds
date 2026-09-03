@@ -80,23 +80,6 @@ curl -X POST localhost:8000/files/<id>/search \
 curl "localhost:8000/files/<id>/sections?start=1000&end=1500"
 ```
 
-## Running tests
-
-Pure-logic tests (chunking byte-offset math, resumable-write semantics) need no
-infrastructure:
-
-```bash
-pip install -r requirements.txt
-pytest tests/test_chunker.py tests/test_storage.py
-```
-
-API integration tests need Postgres/Redis running and are skipped automatically
-otherwise:
-
-```bash
-docker compose up -d postgres redis
-DATABASE_URL=postgresql+asyncpg://app:app@localhost:5432/filesearch pytest
-```
 
 ## Design discussion
 
